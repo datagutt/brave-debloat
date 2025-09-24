@@ -1,0 +1,19 @@
+{
+  "extensions": [
+    {
+      "id": "cjpalhdlnbpafiamejdnhcphjbkeiagm",
+      "name": "uBlock Origin",
+      "description": "Ad blocker and privacy protection"
+    },
+    {
+      "id": "mnjggcdmjocbbbhaepdhchncahnbgone",
+      "name": "SponsorBlock",
+      "description": "Skip YouTube sponsor segments"
+    },
+    {
+      "id": "nkgllhigpcljnhoakjkgaieabnkmgdkb",
+      "name": "Privacy Badger",
+      "description": "Block trackers and protect privacy"
+    }
+  ]
+}
