@@ -24,6 +24,9 @@ cargo build --release
 # Generate Linux JSON for normal Brave
 ./target/release/brave-debloater --platform linux --version normal
 
+# Generate user preferences files for dashboard and search customization
+./target/release/brave-debloater --platform linux --preferences
+
 # Use custom config and extensions files with custom output directory
 ./target/release/brave-debloater --platform windows --config my-config.json --extensions my-extensions.json --output my-output
 
@@ -32,6 +35,9 @@ cargo build --release
 
 # Use minimal debloating
 ./target/release/brave-debloater --platform windows --config configs/minimal.json
+
+# Generate both policies and user preferences with custom preferences config
+./target/release/brave-debloater --platform linux --preferences --preferences-config my-preferences.json
 
 # Default behavior uses privacy-focused config
 ./target/release/brave-debloater --platform linux
@@ -44,6 +50,8 @@ cargo build --release
 - `--config`: Configuration file path (default: `configs/privacy-focused.json`)
 - `--extensions`: Extensions configuration file path (default: `extensions.json`)
 - `--output`: Output directory (default: `output`)
+- `--preferences`: Generate user preferences files for dashboard and search customization
+- `--preferences-config`: Preferences configuration file (default: `preferences.json`)
 
 ## Installation Instructions
 
@@ -89,21 +97,40 @@ Contains privacy-focused extensions to force-install:
 - **SponsorBlock**: Skip YouTube sponsor segments  
 - **Privacy Badger**: Block trackers and protect privacy
 
+### preferences.json
+Contains user preferences for dashboard and search customization:
+
+- **Search engines**: Configure default search engine (Brave, DuckDuckGo, SearXNG, etc.)
+- **Dashboard settings**: Customize new tab page (show clock, hide widgets, etc.)
+- **Experimental features**: Enable advanced ad-blocking and other experimental features
+
 See `configs/README.md` for detailed comparison of variants.
 
 ## Generated Files
 
 The tool generates the following files in the output directory:
 
-### For Normal Brave:
+### Policy Files
+
+**For Normal Brave:**
 - `brave_debloat.reg` (Windows Registry)
 - `brave_debloat_macos.sh` (macOS Script)
 - `brave_debloat_linux.json` + `brave_debloat_linux_install.txt` (Linux)
 
-### For Brave Nightly:
+**For Brave Nightly:**
 - `brave_nightly_debloat.reg` (Windows Registry)
 - `brave_nightly_debloat_macos.sh` (macOS Script)  
 - `brave_nightly_debloat_linux.json` + `brave_nightly_debloat_linux_install.txt` (Linux)
+
+### User Preferences Files (when using --preferences flag)
+
+**For Normal Brave:**
+- `brave_user_preferences.json` + `brave_user_preferences_install.sh/.bat` 
+
+**For Brave Nightly:**
+- `brave_nightly_user_preferences.json` + `brave_nightly_user_preferences_install.sh/.bat`
+
+User preferences files modify Brave's `Preferences` and `Local State` files directly to customize the dashboard, search engine, and enable experimental features. These work alongside the policy files for comprehensive debloating.
 
 ## License
 

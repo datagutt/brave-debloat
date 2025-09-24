@@ -1,0 +1,66 @@
+{
+  "search_engines": [
+    {
+      "keyword": "brave",
+      "name": "Brave Search",
+      "search_url": "https://search.brave.com/search?q={searchTerms}",
+      "description": "Privacy-focused search engine by Brave"
+    },
+    {
+      "keyword": "ddg",
+      "name": "DuckDuckGo",
+      "search_url": "https://duckduckgo.com/?q={searchTerms}",
+      "description": "Privacy-focused search engine"
+    },
+    {
+      "keyword": "searxng",
+      "name": "SearXNG",
+      "search_url": "https://searx.example.com/search?q={searchTerms}",
+      "description": "Self-hosted privacy search engine (customize URL)"
+    },
+    {
+      "keyword": "whoogle",
+      "name": "Whoogle",
+      "search_url": "https://whoogle.example.com/search?q={searchTerms}",
+      "description": "Self-hosted Google proxy (customize URL)"
+    },
+    {
+      "keyword": "yandex",
+      "name": "Yandex",
+      "search_url": "https://yandex.com/search/?text={searchTerms}",
+      "description": "Russian search engine"
+    },
+    {
+      "keyword": "kagi",
+      "name": "Kagi",
+      "search_url": "https://kagi.com/search?q={searchTerms}",
+      "description": "Premium privacy-focused search engine"
+    },
+    {
+      "keyword": "google",
+      "name": "Google",
+      "search_url": "https://www.google.com/search?q={searchTerms}",
+      "description": "Google search"
+    },
+    {
+      "keyword": "bing",
+      "name": "Bing",
+      "search_url": "https://www.bing.com/search?q={searchTerms}",
+      "description": "Microsoft Bing search"
+    }
+  ],
+  "dashboard": {
+    "show_clock": true,
+    "show_background_image": false,
+    "show_stats": false,
+    "show_shortcuts": false,
+    "show_branded_background_image": false,
+    "show_cards": false,
+    "show_search_widget": false,
+    "show_brave_news": false,
+    "show_together": false
+  },
+  "experimental_features": [
+    "brave-adblock-experimental-list-default@1"
+  ]
+}

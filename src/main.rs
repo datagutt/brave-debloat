@@ -1,5 +1,6 @@
 use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -46,6 +47,12 @@ pub struct Args {
     
     #[arg(short, long, default_value = "output")]
     output: String,
+    
+    #[arg(long, help = "Generate user preferences files")]
+    preferences: bool,
+    
+    #[arg(long, default_value = "preferences.json", help = "Preferences configuration file")]
+    preferences_config: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -71,22 +78,93 @@ pub struct ExtensionsConfig {
     extensions: Vec<Extension>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SearchProvider {
+    keyword: String,
+    name: String,
+    search_url: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct NewTabPage {
+    show_clock: Option<bool>,
+    show_background_image: Option<bool>,
+    show_stats: Option<bool>,
+    show_shortcuts: Option<bool>,
+    show_branded_background_image: Option<bool>,
+    show_cards: Option<bool>,
+    show_search_widget: Option<bool>,
+    show_brave_news: Option<bool>,
+    show_together: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct BraveStats {
+    enabled: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct BraveToday {
+    should_show_brave_today_widget: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct BravePreferences {
+    new_tab_page: Option<NewTabPage>,
+    stats: Option<BraveStats>,
+    today: Option<BraveToday>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct BrowserPreferences {
+    enabled_labs_experiments: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct UserPreferences {
+    default_search_provider_data: Option<SearchProvider>,
+    brave: Option<BravePreferences>,
+    browser: Option<BrowserPreferences>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct LocalState {
+    browser: Option<BrowserPreferences>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PreferencesInputConfig {
+    search_engines: Vec<SearchProvider>,
+    dashboard: NewTabPage,
+    experimental_features: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PreferencesConfig {
+    preferences: Option<UserPreferences>,
+    local_state: Option<LocalState>,
+}
+
 struct DebloaterGenerator {
     config: Config,
     extensions: Vec<Extension>,
     platform: Platform,
     version: BraveVersion,
     output_dir: String,
+    generate_preferences: bool,
+    preferences_config: Option<PreferencesInputConfig>,
 }
 
 impl DebloaterGenerator {
-    fn new(config: Config, extensions: Vec<Extension>, platform: Platform, version: BraveVersion, output_dir: String) -> Self {
+    fn new(config: Config, extensions: Vec<Extension>, platform: Platform, version: BraveVersion, output_dir: String, generate_preferences: bool, preferences_config: Option<PreferencesInputConfig>) -> Self {
         Self {
             config,
             extensions,
             platform,
             version,
             output_dir,
+            generate_preferences,
+            preferences_config,
         }
     }
 
@@ -97,7 +175,13 @@ impl DebloaterGenerator {
             Platform::Windows => self.generate_windows_registry(),
             Platform::MacOS => self.generate_macos_script(),
             Platform::Linux => self.generate_linux_json(),
+        }?;
+        
+        if self.generate_preferences {
+            self.generate_user_preferences()?;
         }
+        
+        Ok(())
     }
 
     fn get_brave_registry_path(&self) -> &str {
@@ -268,6 +352,237 @@ impl DebloaterGenerator {
         
         Ok(())
     }
+
+    fn get_preferences_path(&self) -> Vec<String> {
+        match self.platform {
+            Platform::Windows => {
+                let version_suffix = match self.version {
+                    BraveVersion::Normal => "Brave-Browser",
+                    BraveVersion::Nightly => "Brave-Browser-Nightly",
+                };
+                vec![
+                    format!("%USERPROFILE%\\AppData\\Local\\BraveSoftware\\{}\\User Data\\Default\\Preferences", version_suffix),
+                    format!("%USERPROFILE%\\AppData\\Local\\BraveSoftware\\{}\\User Data\\Local State", version_suffix),
+                ]
+            }
+            Platform::MacOS => {
+                let version_suffix = match self.version {
+                    BraveVersion::Normal => "Brave-Browser",
+                    BraveVersion::Nightly => "Brave-Browser-Nightly",
+                };
+                vec![
+                    format!("~/Library/Application Support/BraveSoftware/{}/Default/Preferences", version_suffix),
+                    format!("~/Library/Application Support/BraveSoftware/{}/Local State", version_suffix),
+                ]
+            }
+            Platform::Linux => {
+                let version_suffix = match self.version {
+                    BraveVersion::Normal => "Brave-Browser",
+                    BraveVersion::Nightly => "Brave-Browser-Nightly",
+                };
+                vec![
+                    format!("~/.config/BraveSoftware/{}/Default/Preferences", version_suffix),
+                    format!("~/.config/BraveSoftware/{}/Local State", version_suffix),
+                ]
+            }
+        }
+    }
+
+    fn generate_user_preferences(&self) -> Result<(), DebloaterError> {
+        let prefs_config = self.preferences_config.as_ref();
+        
+        // Use config if provided, otherwise use defaults
+        let search_provider = prefs_config
+            .and_then(|p| p.search_engines.first())
+            .cloned()
+            .unwrap_or_else(|| SearchProvider {
+                keyword: "brave".to_string(),
+                name: "Brave Search".to_string(),
+                search_url: "https://search.brave.com/search?q={searchTerms}".to_string(),
+            });
+
+        let dashboard_config = prefs_config
+            .map(|p| p.dashboard.clone())
+            .unwrap_or_else(|| NewTabPage {
+                show_clock: Some(true),
+                show_background_image: Some(false),
+                show_stats: Some(false),
+                show_shortcuts: Some(false),
+                show_branded_background_image: Some(false),
+                show_cards: Some(false),
+                show_search_widget: Some(false),
+                show_brave_news: Some(false),
+                show_together: Some(false),
+            });
+
+        let experimental_features = prefs_config
+            .map(|p| p.experimental_features.clone())
+            .unwrap_or_else(|| vec!["brave-adblock-experimental-list-default@1".to_string()]);
+
+        // Generate user preferences for dashboard customization
+        let preferences = UserPreferences {
+            default_search_provider_data: Some(search_provider),
+            brave: Some(BravePreferences {
+                new_tab_page: Some(dashboard_config),
+                stats: Some(BraveStats {
+                    enabled: Some(false),
+                }),
+                today: Some(BraveToday {
+                    should_show_brave_today_widget: Some(false),
+                }),
+            }),
+            browser: None,
+        };
+
+        // Generate Local State for experimental features
+        let local_state = LocalState {
+            browser: Some(BrowserPreferences {
+                enabled_labs_experiments: Some(experimental_features),
+            }),
+        };
+
+        let prefs_config = PreferencesConfig {
+            preferences: Some(preferences),
+            local_state: Some(local_state),
+        };
+
+        let preferences_json = serde_json::to_string_pretty(&prefs_config)?;
+        
+        let filename = match self.version {
+            BraveVersion::Normal => "brave_user_preferences.json",
+            BraveVersion::Nightly => "brave_nightly_user_preferences.json",
+        };
+        
+        let output_path = Path::new(&self.output_dir).join(filename);
+        fs::write(&output_path, preferences_json)?;
+
+        // Generate installation instructions
+        self.generate_preferences_instructions()?;
+
+        Ok(())
+    }
+
+    fn generate_preferences_instructions(&self) -> Result<(), DebloaterError> {
+        let paths = self.get_preferences_path();
+        let prefs_path = &paths[0];
+        let local_state_path = &paths[1];
+
+        let filename = match self.version {
+            BraveVersion::Normal => "brave_user_preferences.json",
+            BraveVersion::Nightly => "brave_nightly_user_preferences.json",
+        };
+
+        let instructions = match self.platform {
+            Platform::Windows => {
+                format!(
+                    "# User Preferences Installation Instructions for Windows\n\
+                    # \n\
+                    # IMPORTANT: Close Brave browser completely before applying these changes!\n\
+                    # \n\
+                    # 1. Navigate to your Brave user data directory:\n\
+                    #    {}\n\
+                    # \n\
+                    # 2. If the Preferences file exists, back it up:\n\
+                    #    copy \"Preferences\" \"Preferences.backup\"\n\
+                    # \n\
+                    # 3. Extract the 'preferences' section from {} and overwrite/merge with your Preferences file\n\
+                    # \n\
+                    # 4. For Local State, navigate to:\n\
+                    #    {}\n\
+                    # \n\
+                    # 5. Extract the 'local_state' section and merge with your Local State file\n\
+                    # \n\
+                    # 6. Start Brave browser to see the changes\n\
+                    # \n\
+                    # Note: The JSON structure in {} shows the exact format needed.\n\
+                    # You can manually merge these settings or use a JSON editor.",
+                    prefs_path, filename, local_state_path, filename
+                )
+            }
+            Platform::MacOS => {
+                format!(
+                    "#!/bin/bash\n\
+                    # User Preferences Installation Instructions for macOS\n\
+                    # \n\
+                    # IMPORTANT: Close Brave browser completely before applying these changes!\n\
+                    # \n\
+                    echo \"Applying Brave user preferences...\"\n\
+                    \n\
+                    PREFS_PATH=\"{}\"\n\
+                    LOCAL_STATE_PATH=\"{}\"\n\
+                    \n\
+                    # Create directories if they don't exist\n\
+                    mkdir -p \"$(dirname \"$PREFS_PATH\")\"\n\
+                    mkdir -p \"$(dirname \"$LOCAL_STATE_PATH\")\"\n\
+                    \n\
+                    # Backup existing files\n\
+                    [ -f \"$PREFS_PATH\" ] && cp \"$PREFS_PATH\" \"$PREFS_PATH.backup\"\n\
+                    [ -f \"$LOCAL_STATE_PATH\" ] && cp \"$LOCAL_STATE_PATH\" \"$LOCAL_STATE_PATH.backup\"\n\
+                    \n\
+                    echo \"Please manually merge the 'preferences' and 'local_state' sections from {}\"\n\
+                    echo \"with your existing Preferences and Local State files.\"\n\
+                    echo \"Preferences file: $PREFS_PATH\"\n\
+                    echo \"Local State file: $LOCAL_STATE_PATH\"\n\
+                    \n\
+                    echo \"Configuration complete. Start Brave to see changes.\"",
+                    prefs_path, local_state_path, filename
+                )
+            }
+            Platform::Linux => {
+                format!(
+                    "#!/bin/bash\n\
+                    # User Preferences Installation Instructions for Linux\n\
+                    # \n\
+                    # IMPORTANT: Close Brave browser completely before applying these changes!\n\
+                    # \n\
+                    echo \"Applying Brave user preferences...\"\n\
+                    \n\
+                    PREFS_PATH=\"{}\"\n\
+                    LOCAL_STATE_PATH=\"{}\"\n\
+                    \n\
+                    # Create directories if they don't exist\n\
+                    mkdir -p \"$(dirname \"$PREFS_PATH\")\"\n\
+                    mkdir -p \"$(dirname \"$LOCAL_STATE_PATH\")\"\n\
+                    \n\
+                    # Backup existing files\n\
+                    [ -f \"$PREFS_PATH\" ] && cp \"$PREFS_PATH\" \"$PREFS_PATH.backup\"\n\
+                    [ -f \"$LOCAL_STATE_PATH\" ] && cp \"$LOCAL_STATE_PATH\" \"$LOCAL_STATE_PATH.backup\"\n\
+                    \n\
+                    echo \"Please manually merge the 'preferences' and 'local_state' sections from {}\"\n\
+                    echo \"with your existing Preferences and Local State files using jq or a JSON editor.\"\n\
+                    echo \"\"\n\
+                    echo \"Example using jq (if installed):\"\n\
+                    echo \"# For Preferences file:\"\n\
+                    echo \"jq -s '.[0] * .[1].preferences' \\\"$PREFS_PATH\\\" {} > temp_prefs.json && mv temp_prefs.json \\\"$PREFS_PATH\\\"\"\n\
+                    echo \"\"\n\
+                    echo \"# For Local State file:\"\n\
+                    echo \"jq -s '.[0] * .[1].local_state' \\\"$LOCAL_STATE_PATH\\\" {} > temp_local.json && mv temp_local.json \\\"$LOCAL_STATE_PATH\\\"\"\n\
+                    echo \"\"\n\
+                    echo \"Preferences file: $PREFS_PATH\"\n\
+                    echo \"Local State file: $LOCAL_STATE_PATH\"\n\
+                    echo \"\"\n\
+                    echo \"Configuration complete. Start Brave to see changes.\"",
+                    prefs_path, local_state_path, filename, filename, filename
+                )
+            }
+        };
+
+        let instructions_filename = match self.version {
+            BraveVersion::Normal => match self.platform {
+                Platform::Windows => "brave_user_preferences_install.bat",
+                _ => "brave_user_preferences_install.sh",
+            },
+            BraveVersion::Nightly => match self.platform {
+                Platform::Windows => "brave_nightly_user_preferences_install.bat",
+                _ => "brave_nightly_user_preferences_install.sh",
+            },
+        };
+
+        let instructions_path = Path::new(&self.output_dir).join(instructions_filename);
+        fs::write(instructions_path, instructions)?;
+
+        Ok(())
+    }
 }
 
 fn load_config(config_path: &str) -> Result<Config, DebloaterError> {
@@ -290,6 +605,16 @@ fn load_extensions(extensions_path: &str) -> Result<Vec<Extension>, DebloaterErr
     Ok(extensions_config.extensions)
 }
 
+fn load_preferences_config(preferences_path: &str) -> Result<Option<PreferencesInputConfig>, DebloaterError> {
+    if !Path::new(preferences_path).exists() {
+        return Ok(None); // Optional file
+    }
+    
+    let content = fs::read_to_string(preferences_path)?;
+    let prefs_config: PreferencesInputConfig = serde_json::from_str(&content)?;
+    Ok(Some(prefs_config))
+}
+
 fn main() -> Result<(), DebloaterError> {
     let args = Args::parse();
     
@@ -303,6 +628,22 @@ fn main() -> Result<(), DebloaterError> {
     println!("Loaded {} extensions: {}", 
              extensions.len(),
              extension_names.join(", "));
+
+    // Load preferences config if preferences generation is requested
+    let preferences_config = if args.preferences {
+        println!("Loading preferences from: {}", args.preferences_config);
+        load_preferences_config(&args.preferences_config)?
+    } else {
+        None
+    };
+
+    if args.preferences {
+        if preferences_config.is_some() {
+            println!("Loaded preferences configuration");
+        } else {
+            println!("Using default preferences configuration");
+        }
+    }
     
     println!("Generating {} configuration for Brave {:?}...", 
              match args.platform {
@@ -313,7 +654,7 @@ fn main() -> Result<(), DebloaterError> {
              args.version);
     
     let output_dir = args.output.clone();
-    let generator = DebloaterGenerator::new(config, extensions, args.platform, args.version, args.output);
+    let generator = DebloaterGenerator::new(config, extensions, args.platform, args.version, args.output, args.preferences, preferences_config);
     generator.generate()?;
     
     println!("Configuration files generated successfully in: {}", output_dir);
