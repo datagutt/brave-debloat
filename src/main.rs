@@ -48,8 +48,7 @@ pub struct Args {
     #[arg(short, long, default_value = "output")]
     output: String,
     
-    #[arg(long, help = "Generate user preferences files")]
-    preferences: bool,
+
     
     #[arg(long, default_value = "preferences.json", help = "Preferences configuration file")]
     preferences_config: String,
@@ -151,19 +150,18 @@ struct DebloaterGenerator {
     platform: Platform,
     version: BraveVersion,
     output_dir: String,
-    generate_preferences: bool,
+
     preferences_config: Option<PreferencesInputConfig>,
 }
 
 impl DebloaterGenerator {
-    fn new(config: Config, extensions: Vec<Extension>, platform: Platform, version: BraveVersion, output_dir: String, generate_preferences: bool, preferences_config: Option<PreferencesInputConfig>) -> Self {
+    fn new(config: Config, extensions: Vec<Extension>, platform: Platform, version: BraveVersion, output_dir: String, preferences_config: Option<PreferencesInputConfig>) -> Self {
         Self {
             config,
             extensions,
             platform,
             version,
             output_dir,
-            generate_preferences,
             preferences_config,
         }
     }
@@ -172,16 +170,10 @@ impl DebloaterGenerator {
         fs::create_dir_all(&self.output_dir)?;
         
         match self.platform {
-            Platform::Windows => self.generate_windows_registry(),
-            Platform::MacOS => self.generate_macos_script(),
-            Platform::Linux => self.generate_linux_json(),
-        }?;
-        
-        if self.generate_preferences {
-            self.generate_user_preferences()?;
+            Platform::Windows => self.generate_unified_windows_script(),
+            Platform::MacOS => self.generate_unified_macos_script(),
+            Platform::Linux => self.generate_unified_linux_script(),
         }
-        
-        Ok(())
     }
 
     fn get_brave_registry_path(&self) -> &str {
@@ -205,12 +197,51 @@ impl DebloaterGenerator {
         }
     }
 
-    fn generate_windows_registry(&self) -> Result<(), DebloaterError> {
+    fn generate_unified_windows_script(&self) -> Result<(), DebloaterError> {
+        let filename = match self.version {
+            BraveVersion::Normal => "brave_debloat.bat",
+            BraveVersion::Nightly => "brave_nightly_debloat.bat",
+        };
+        
+        let version_suffix = match self.version {
+            BraveVersion::Normal => "Brave-Browser",
+            BraveVersion::Nightly => "Brave-Browser-Nightly",
+        };
+        
         let mut content = String::new();
-        content.push_str("Windows Registry Editor Version 5.00\n\n");
+        content.push_str("@echo off\n");
+        content.push_str("setlocal enabledelayedexpansion\n");
+        content.push_str("REM Unified Brave Browser Debloater Script for Windows\n");
+        content.push_str("REM This script applies both policies and user preferences\n");
+        content.push_str("REM Run as Administrator\n\n");
+        
+        content.push_str("echo Brave Browser Debloater for Windows\n");
+        content.push_str("echo ====================================\n\n");
+        
+        content.push_str("REM Check for admin rights\n");
+        content.push_str("net session >nul 2>&1\n");
+        content.push_str("if %errorlevel% neq 0 (\n");
+        content.push_str("    echo This script must be run as Administrator!\n");
+        content.push_str("    pause\n");
+        content.push_str("    exit /b 1\n");
+        content.push_str(")\n\n");
+        
+        // Check if Brave is running
+        content.push_str("echo Checking if Brave is running...\n");
+        content.push_str("tasklist /fi \"imagename eq brave.exe\" 2>nul | find /i \"brave.exe\" >nul\n");
+        content.push_str("if not errorlevel 1 (\n");
+        content.push_str("    echo WARNING: Brave browser is running!\n");
+        content.push_str("    echo Please close Brave browser before running this script.\n");
+        content.push_str("    echo Press any key to continue anyway, or Ctrl+C to exit.\n");
+        content.push_str("    pause >nul\n");
+        content.push_str("    taskkill /f /im brave.exe >nul 2>&1\n");
+        content.push_str("    timeout /t 2 >nul\n");
+        content.push_str(")\n\n");
+        
+        // Generate registry entries
+        content.push_str("echo Applying Brave policies via registry...\n");
         
         let registry_path = self.get_brave_registry_path();
-        content.push_str(&format!("[HKEY_LOCAL_MACHINE\\{}]\n", registry_path));
         
         for (key, value) in &self.config {
             if key == "ExtensionInstallForcelist" {
@@ -218,26 +249,42 @@ impl DebloaterGenerator {
             }
             
             let reg_value = match value {
-                ConfigValue::Bool(b) => format!("\"{}\"=dword:{:08x}\n", key, if *b { 1 } else { 0 }),
-                ConfigValue::String(s) => format!("\"{}\"=\"{}\"\n", key, s),
-                ConfigValue::Number(n) => format!("\"{}\"=dword:{:08x}\n", key, n),
-                ConfigValue::StringArray(_) => continue, // Skip arrays for main section
+                ConfigValue::Bool(b) => format!("reg add \"HKEY_LOCAL_MACHINE\\{}\" /v \"{}\" /t REG_DWORD /d {} /f >nul 2>&1\n", registry_path, key, if *b { 1 } else { 0 }),
+                ConfigValue::String(s) => format!("reg add \"HKEY_LOCAL_MACHINE\\{}\" /v \"{}\" /t REG_SZ /d \"{}\" /f >nul 2>&1\n", registry_path, key, s),
+                ConfigValue::Number(n) => format!("reg add \"HKEY_LOCAL_MACHINE\\{}\" /v \"{}\" /t REG_DWORD /d {} /f >nul 2>&1\n", registry_path, key, n),
+                ConfigValue::StringArray(_) => continue,
             };
             content.push_str(&reg_value);
         }
         
         // Handle ExtensionInstallForcelist
         if !self.extensions.is_empty() {
-            content.push_str(&format!("\n[HKEY_LOCAL_MACHINE\\{}\\ExtensionInstallForcelist]\n", registry_path));
             for (i, ext) in self.extensions.iter().enumerate() {
-                content.push_str(&format!("\"{}\"=\"{}\"\n", i + 1, ext.id));
+                content.push_str(&format!("reg add \"HKEY_LOCAL_MACHINE\\{}\\ExtensionInstallForcelist\" /v \"{}\" /t REG_SZ /d \"{}\" /f >nul 2>&1\n", registry_path, i + 1, ext.id));
             }
         }
-
-        let filename = match self.version {
-            BraveVersion::Normal => "brave_debloat.reg",
-            BraveVersion::Nightly => "brave_nightly_debloat.reg",
-        };
+        
+        content.push_str("echo Registry policies applied successfully!\n\n");
+        
+        // Add user preferences modification
+        content.push_str("echo Modifying user preferences...\n");
+        content.push_str(&format!("set \"BRAVE_DATA=%USERPROFILE%\\AppData\\Local\\BraveSoftware\\{}\\User Data\"\n", version_suffix));
+        content.push_str("set \"PREFS_FILE=%BRAVE_DATA%\\Default\\Preferences\"\n");
+        content.push_str("set \"LOCAL_STATE=%BRAVE_DATA%\\Local State\"\n\n");
+        
+        // Create directories if they don't exist
+        content.push_str("if not exist \"%BRAVE_DATA%\\Default\" mkdir \"%BRAVE_DATA%\\Default\"\n\n");
+        
+        // Backup existing files
+        content.push_str("if exist \"%PREFS_FILE%\" copy \"%PREFS_FILE%\" \"%PREFS_FILE%.backup\" >nul 2>&1\n");
+        content.push_str("if exist \"%LOCAL_STATE%\" copy \"%LOCAL_STATE%\" \"%LOCAL_STATE%.backup\" >nul 2>&1\n\n");
+        
+        // Generate the user preferences modification using PowerShell
+        self.add_windows_preferences_powershell(&mut content)?;
+        
+        content.push_str("echo Configuration complete!\n");
+        content.push_str("echo Please restart Brave browser for changes to take effect.\n");
+        content.push_str("pause\n");
         
         let output_path = Path::new(&self.output_dir).join(filename);
         fs::write(output_path, content)?;
@@ -245,41 +292,80 @@ impl DebloaterGenerator {
         Ok(())
     }
 
-    fn generate_macos_script(&self) -> Result<(), DebloaterError> {
+    fn generate_unified_macos_script(&self) -> Result<(), DebloaterError> {
+        let filename = match self.version {
+            BraveVersion::Normal => "brave_debloat_macos.sh",
+            BraveVersion::Nightly => "brave_nightly_debloat_macos.sh",
+        };
+        
+        let version_suffix = match self.version {
+            BraveVersion::Normal => "Brave-Browser",
+            BraveVersion::Nightly => "Brave-Browser-Nightly",
+        };
+        
         let mut content = String::new();
         content.push_str("#!/bin/zsh\n");
-        content.push_str("# Brave Browser Debloater Script for macOS\n");
-        content.push_str("# This script configures Brave Browser policies using the 'defaults' command\n\n");
+        content.push_str("# Unified Brave Browser Debloater Script for macOS\n");
+        content.push_str("# This script applies both policies and user preferences\n");
+        content.push_str("# Run with sudo for system-wide changes\n\n");
+        
+        content.push_str("# Colors for output\n");
+        content.push_str("RED='\\033[0;31m'\n");
+        content.push_str("GREEN='\\033[0;32m'\n");
+        content.push_str("YELLOW='\\033[1;33m'\n");
+        content.push_str("NC='\\033[0m' # No Color\n\n");
+        
+        content.push_str("echo -e \"${GREEN}Brave Browser Debloater for macOS${NC}\"\n");
+        content.push_str("echo -e \"${GREEN}====================================${NC}\"\n");
+        content.push_str("echo\n\n");
+        
+        // Check for sudo if needed for policies
+        content.push_str("if [ \"$EUID\" -ne 0 ]; then\n");
+        content.push_str("    echo -e \"${YELLOW}Note: Running without sudo. System policies will be skipped.${NC}\"\n");
+        content.push_str("    echo -e \"${YELLOW}Run with sudo for complete configuration.${NC}\"\n");
+        content.push_str("    SKIP_POLICIES=1\n");
+        content.push_str("else\n");
+        content.push_str("    SKIP_POLICIES=0\n");
+        content.push_str("fi\n");
+        content.push_str("echo\n\n");
+        
+        // Check if Brave is running
+        content.push_str("echo \"Checking if Brave is running...\"\n");
+        content.push_str("if pgrep -f \"Brave Browser\" > /dev/null; then\n");
+        content.push_str("    echo -e \"${YELLOW}WARNING: Brave browser is running!${NC}\"\n");
+        content.push_str("    echo \"Please close Brave browser before running this script.\"\n");
+        content.push_str("    echo \"Press Enter to continue anyway, or Ctrl+C to exit.\"\n");
+        content.push_str("    read\n");
+        content.push_str("    pkill -f \"Brave Browser\" 2>/dev/null\n");
+        content.push_str("    sleep 2\n");
+        content.push_str("fi\n");
+        content.push_str("echo\n\n");
+        
+        // Apply system policies if running as root
+        content.push_str("if [ \"$SKIP_POLICIES\" -eq 0 ]; then\n");
+        content.push_str("    echo -e \"${GREEN}Applying system policies...${NC}\"\n");
         
         let bundle_id = self.get_macos_bundle_id();
         
-        for (key, value) in &self.config {
-            if key == "ExtensionInstallForcelist" || key == "ReportAppInventory" || key == "ReportWebsiteTelemetry" {
-                continue; // Skip arrays for defaults commands
-            }
-            
-            let defaults_cmd = match value {
-                ConfigValue::Bool(b) => format!("defaults write {} {} -bool {}\n", bundle_id, key, b),
-                ConfigValue::String(s) => format!("defaults write {} {} -string \"{}\"\n", bundle_id, key, s),
-                ConfigValue::Number(n) => format!("defaults write {} {} -int {}\n", bundle_id, key, n),
-                ConfigValue::StringArray(_) => continue,
-            };
-            content.push_str(&defaults_cmd);
-        }
-        
-        content.push_str("\n# Restart cfprefsd to apply changes immediately\n");
-        content.push_str("sudo killall cfprefsd\n\n");
-        
         // Create managed preferences plist
-        content.push_str("# Create managed preferences directory and plist file (overwrite if exists)\n");
-        content.push_str("sudo mkdir -p /Library/Managed\\ Preferences\n");
-        content.push_str(&format!("cat << 'EOF' | sudo tee /Library/Managed\\ Preferences/{}.plist > /dev/null\n", bundle_id));
+        content.push_str("    mkdir -p /Library/Managed\\ Preferences\n");
+        content.push_str(&format!("    cat << 'EOF' > /Library/Managed\\ Preferences/{}.plist\n", bundle_id));
         content.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         content.push_str("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n");
         content.push_str("<plist version=\"1.0\">\n<dict>\n");
         
         for (key, value) in &self.config {
-            if key == "ExtensionInstallForcelist" || key == "ReportAppInventory" || key == "ReportWebsiteTelemetry" {
+            if key == "ExtensionInstallForcelist" {
+                // Handle extension list
+                content.push_str("    <key>ExtensionInstallForcelist</key>\n");
+                content.push_str("    <array>\n");
+                for ext in &self.extensions {
+                    content.push_str(&format!("        <string>{}</string>\n", ext.id));
+                }
+                content.push_str("    </array>\n");
+                continue;
+            }
+            if key == "ReportAppInventory" || key == "ReportWebsiteTelemetry" {
                 continue;
             }
             
@@ -288,18 +374,30 @@ impl DebloaterGenerator {
                 ConfigValue::Bool(b) => content.push_str(&format!("    <{}/>", if *b { "true" } else { "false" })),
                 ConfigValue::String(s) => content.push_str(&format!("    <string>{}</string>", s)),
                 ConfigValue::Number(n) => content.push_str(&format!("    <integer>{}</integer>", n)),
-                ConfigValue::StringArray(_) => continue,
+                ConfigValue::StringArray(arr) => {
+                    content.push_str("    <array>\n");
+                    for item in arr {
+                        content.push_str(&format!("        <string>{}</string>\n", item));
+                    }
+                    content.push_str("    </array>");
+                }
             }
             content.push_str("\n");
         }
         
-        content.push_str("</dict>\n</plist>\nEOF\n\n");
-        content.push_str(&format!("sudo chmod 644 /Library/Managed\\ Preferences/{}.plist\n", bundle_id));
+        content.push_str("</dict>\n</plist>\nEOF\n");
+        content.push_str(&format!("    chmod 644 /Library/Managed\\ Preferences/{}.plist\n", bundle_id));
+        content.push_str("    echo -e \"${GREEN}System policies applied successfully!${NC}\"\n");
+        content.push_str("else\n");
+        content.push_str("    echo -e \"${YELLOW}Skipping system policies (not running as sudo)${NC}\"\n");
+        content.push_str("fi\n");
+        content.push_str("echo\n\n");
         
-        let filename = match self.version {
-            BraveVersion::Normal => "brave_debloat_macos.sh",
-            BraveVersion::Nightly => "brave_nightly_debloat_macos.sh",
-        };
+        // Add user preferences modification
+        self.add_macos_preferences_section(&mut content, version_suffix)?;
+        
+        content.push_str("echo -e \"${GREEN}Configuration complete!${NC}\"\n");
+        content.push_str("echo -e \"${GREEN}Please restart Brave browser for changes to take effect.${NC}\"\n");
         
         let output_path = Path::new(&self.output_dir).join(filename);
         fs::write(output_path, content)?;
@@ -307,88 +405,106 @@ impl DebloaterGenerator {
         Ok(())
     }
 
-    fn generate_linux_json(&self) -> Result<(), DebloaterError> {
-        let mut final_config = self.config.clone();
+    fn generate_unified_linux_script(&self) -> Result<(), DebloaterError> {
+        let filename = match self.version {
+            BraveVersion::Normal => "brave_debloat_linux.sh",
+            BraveVersion::Nightly => "brave_nightly_debloat_linux.sh",
+        };
         
-        // Add ExtensionInstallForcelist if extensions exist
+        let version_suffix = match self.version {
+            BraveVersion::Normal => "Brave-Browser",
+            BraveVersion::Nightly => "Brave-Browser-Nightly",
+        };
+        
+        let policy_path = self.get_linux_policy_path();
+        
+        let mut content = String::new();
+        content.push_str("#!/bin/bash\n");
+        content.push_str("# Unified Brave Browser Debloater Script for Linux\n");
+        content.push_str("# This script applies both policies and user preferences\n");
+        content.push_str("# Run with sudo for system-wide changes\n\n");
+        
+        content.push_str("# Colors for output\n");
+        content.push_str("RED='\\033[0;31m'\n");
+        content.push_str("GREEN='\\033[0;32m'\n");
+        content.push_str("YELLOW='\\033[1;33m'\n");
+        content.push_str("NC='\\033[0m' # No Color\n\n");
+        
+        content.push_str("echo -e \"${GREEN}Brave Browser Debloater for Linux${NC}\"\n");
+        content.push_str("echo -e \"${GREEN}===================================${NC}\"\n");
+        content.push_str("echo\n\n");
+        
+        // Check for sudo if needed for policies
+        content.push_str("if [ \"$EUID\" -ne 0 ]; then\n");
+        content.push_str("    echo -e \"${YELLOW}Note: Running without sudo. System policies will be skipped.${NC}\"\n");
+        content.push_str("    echo -e \"${YELLOW}Run with sudo for complete configuration.${NC}\"\n");
+        content.push_str("    SKIP_POLICIES=1\n");
+        content.push_str("else\n");
+        content.push_str("    SKIP_POLICIES=0\n");
+        content.push_str("fi\n");
+        content.push_str("echo\n\n");
+        
+        // Check if Brave is running
+        content.push_str("echo \"Checking if Brave is running...\"\n");
+        content.push_str("if pgrep -f brave > /dev/null; then\n");
+        content.push_str("    echo -e \"${YELLOW}WARNING: Brave browser is running!${NC}\"\n");
+        content.push_str("    echo \"Please close Brave browser before running this script.\"\n");
+        content.push_str("    echo \"Press Enter to continue anyway, or Ctrl+C to exit.\"\n");
+        content.push_str("    read\n");
+        content.push_str("    pkill -f brave 2>/dev/null\n");
+        content.push_str("    sleep 2\n");
+        content.push_str("fi\n");
+        content.push_str("echo\n\n");
+        
+        // Apply system policies if running as root
+        content.push_str("if [ \"$SKIP_POLICIES\" -eq 0 ]; then\n");
+        content.push_str("    echo -e \"${GREEN}Applying system policies...${NC}\"\n");
+        content.push_str(&format!("    mkdir -p \"$(dirname '{}')\"\n", policy_path));
+        
+        // Create the JSON policy file
+        content.push_str(&format!("    cat << 'EOF' > '{}'\n", policy_path));
+        
+        // Generate JSON content
+        let mut final_config = self.config.clone();
         if !self.extensions.is_empty() {
             let extension_ids: Vec<String> = self.extensions.iter().map(|e| e.id.clone()).collect();
             final_config.insert("ExtensionInstallForcelist".to_string(), ConfigValue::StringArray(extension_ids));
         }
-        
         let config_json = serde_json::to_string_pretty(&final_config)?;
+        content.push_str(&config_json);
+        content.push_str("\nEOF\n");
         
-        let filename = match self.version {
-            BraveVersion::Normal => "brave_debloat_linux.json",
-            BraveVersion::Nightly => "brave_nightly_debloat_linux.json",
-        };
+        content.push_str(&format!("    chmod 644 '{}'\n", policy_path));
+        content.push_str("    echo -e \"${GREEN}System policies applied successfully!${NC}\"\n");
+        content.push_str("else\n");
+        content.push_str("    echo -e \"${YELLOW}Skipping system policies (not running as sudo)${NC}\"\n");
+        content.push_str("fi\n");
+        content.push_str("echo\n\n");
+        
+        // Add user preferences modification
+        self.add_linux_preferences_section(&mut content, version_suffix)?;
+        
+        content.push_str("echo -e \"${GREEN}Configuration complete!${NC}\"\n");
+        content.push_str("echo -e \"${GREEN}Please restart Brave browser for changes to take effect.${NC}\"\n");
         
         let output_path = Path::new(&self.output_dir).join(filename);
-        fs::write(&output_path, config_json)?;
+        fs::write(&output_path, content)?;
         
-        // Create installation instructions
-        let policy_path = self.get_linux_policy_path();
-        let instructions = format!(
-            "# Linux Installation Instructions\n\
-            # Copy this JSON file to: {}\n\
-            # Create the directory if it doesn't exist:\n\
-            sudo mkdir -p $(dirname {})\n\
-            sudo cp {} {}\n\
-            sudo chmod 644 {}\n",
-            policy_path,
-            policy_path,
-            output_path.display(),
-            policy_path,
-            policy_path
-        );
-        
-        let instructions_file = match self.version {
-            BraveVersion::Normal => "brave_debloat_linux_install.txt",
-            BraveVersion::Nightly => "brave_nightly_debloat_linux_install.txt",
-        };
-        
-        let instructions_path = Path::new(&self.output_dir).join(instructions_file);
-        fs::write(instructions_path, instructions)?;
+        // Make the script executable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&output_path)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&output_path, perms)?;
+        }
         
         Ok(())
     }
 
-    fn get_preferences_path(&self) -> Vec<String> {
-        match self.platform {
-            Platform::Windows => {
-                let version_suffix = match self.version {
-                    BraveVersion::Normal => "Brave-Browser",
-                    BraveVersion::Nightly => "Brave-Browser-Nightly",
-                };
-                vec![
-                    format!("%USERPROFILE%\\AppData\\Local\\BraveSoftware\\{}\\User Data\\Default\\Preferences", version_suffix),
-                    format!("%USERPROFILE%\\AppData\\Local\\BraveSoftware\\{}\\User Data\\Local State", version_suffix),
-                ]
-            }
-            Platform::MacOS => {
-                let version_suffix = match self.version {
-                    BraveVersion::Normal => "Brave-Browser",
-                    BraveVersion::Nightly => "Brave-Browser-Nightly",
-                };
-                vec![
-                    format!("~/Library/Application Support/BraveSoftware/{}/Default/Preferences", version_suffix),
-                    format!("~/Library/Application Support/BraveSoftware/{}/Local State", version_suffix),
-                ]
-            }
-            Platform::Linux => {
-                let version_suffix = match self.version {
-                    BraveVersion::Normal => "Brave-Browser",
-                    BraveVersion::Nightly => "Brave-Browser-Nightly",
-                };
-                vec![
-                    format!("~/.config/BraveSoftware/{}/Default/Preferences", version_suffix),
-                    format!("~/.config/BraveSoftware/{}/Local State", version_suffix),
-                ]
-            }
-        }
-    }
 
-    fn generate_user_preferences(&self) -> Result<(), DebloaterError> {
+
+    fn add_windows_preferences_powershell(&self, content: &mut String) -> Result<(), DebloaterError> {
         let prefs_config = self.preferences_config.as_ref();
         
         // Use config if provided, otherwise use defaults
@@ -419,168 +535,387 @@ impl DebloaterGenerator {
             .map(|p| p.experimental_features.clone())
             .unwrap_or_else(|| vec!["brave-adblock-experimental-list-default@1".to_string()]);
 
-        // Generate user preferences for dashboard customization
-        let preferences = UserPreferences {
-            default_search_provider_data: Some(search_provider),
-            brave: Some(BravePreferences {
-                new_tab_page: Some(dashboard_config),
-                stats: Some(BraveStats {
-                    enabled: Some(false),
-                }),
-                today: Some(BraveToday {
-                    should_show_brave_today_widget: Some(false),
-                }),
-            }),
-            browser: None,
-        };
-
-        // Generate Local State for experimental features
-        let local_state = LocalState {
-            browser: Some(BrowserPreferences {
-                enabled_labs_experiments: Some(experimental_features),
-            }),
-        };
-
-        let prefs_config = PreferencesConfig {
-            preferences: Some(preferences),
-            local_state: Some(local_state),
-        };
-
-        let preferences_json = serde_json::to_string_pretty(&prefs_config)?;
+        // Create PowerShell script embedded in batch
+        content.push_str("echo Modifying Preferences file...\n");
+        content.push_str("powershell -ExecutionPolicy Bypass -Command \"\n");
+        content.push_str("$prefsPath = '%PREFS_FILE%';\n");
+        content.push_str("$localStatePath = '%LOCAL_STATE%';\n");
+        content.push_str("if (Test-Path $prefsPath) {\n");
+        content.push_str("    $prefs = Get-Content $prefsPath -Raw | ConvertFrom-Json\n");
+        content.push_str("} else {\n");
+        content.push_str("    $prefs = @{}\n");
+        content.push_str("}\n");
         
-        let filename = match self.version {
-            BraveVersion::Normal => "brave_user_preferences.json",
-            BraveVersion::Nightly => "brave_nightly_user_preferences.json",
-        };
+        // Add search provider
+        content.push_str("if (-not $prefs.default_search_provider_data) { $prefs.default_search_provider_data = @{} }\n");
+        content.push_str(&format!("$prefs.default_search_provider_data.keyword = '{}'\n", search_provider.keyword));
+        content.push_str(&format!("$prefs.default_search_provider_data.name = '{}'\n", search_provider.name));
+        content.push_str(&format!("$prefs.default_search_provider_data.search_url = '{}'\n", search_provider.search_url));
         
-        let output_path = Path::new(&self.output_dir).join(filename);
-        fs::write(&output_path, preferences_json)?;
-
-        // Generate installation instructions
-        self.generate_preferences_instructions()?;
-
+        // Add brave preferences
+        content.push_str("if (-not $prefs.brave) { $prefs.brave = @{} }\n");
+        content.push_str("if (-not $prefs.brave.new_tab_page) { $prefs.brave.new_tab_page = @{} }\n");
+        content.push_str("if (-not $prefs.brave.stats) { $prefs.brave.stats = @{} }\n");
+        content.push_str("if (-not $prefs.brave.today) { $prefs.brave.today = @{} }\n");
+        
+        // Dashboard settings
+        if let Some(show_clock) = dashboard_config.show_clock {
+            content.push_str(&format!("$prefs.brave.new_tab_page.show_clock = ${}\n", show_clock.to_string().to_lowercase()));
+        }
+        if let Some(show_bg) = dashboard_config.show_background_image {
+            content.push_str(&format!("$prefs.brave.new_tab_page.show_background_image = ${}\n", show_bg.to_string().to_lowercase()));
+        }
+        if let Some(show_stats) = dashboard_config.show_stats {
+            content.push_str(&format!("$prefs.brave.new_tab_page.show_stats = ${}\n", show_stats.to_string().to_lowercase()));
+        }
+        if let Some(show_shortcuts) = dashboard_config.show_shortcuts {
+            content.push_str(&format!("$prefs.brave.new_tab_page.show_shortcuts = ${}\n", show_shortcuts.to_string().to_lowercase()));
+        }
+        if let Some(show_branded) = dashboard_config.show_branded_background_image {
+            content.push_str(&format!("$prefs.brave.new_tab_page.show_branded_background_image = ${}\n", show_branded.to_string().to_lowercase()));
+        }
+        if let Some(show_cards) = dashboard_config.show_cards {
+            content.push_str(&format!("$prefs.brave.new_tab_page.show_cards = ${}\n", show_cards.to_string().to_lowercase()));
+        }
+        if let Some(show_search) = dashboard_config.show_search_widget {
+            content.push_str(&format!("$prefs.brave.new_tab_page.show_search_widget = ${}\n", show_search.to_string().to_lowercase()));
+        }
+        if let Some(show_news) = dashboard_config.show_brave_news {
+            content.push_str(&format!("$prefs.brave.new_tab_page.show_brave_news = ${}\n", show_news.to_string().to_lowercase()));
+        }
+        if let Some(show_together) = dashboard_config.show_together {
+            content.push_str(&format!("$prefs.brave.new_tab_page.show_together = ${}\n", show_together.to_string().to_lowercase()));
+        }
+        
+        content.push_str("$prefs.brave.stats.enabled = $false\n");
+        content.push_str("$prefs.brave.today.should_show_brave_today_widget = $false\n");
+        
+        // Save preferences
+        content.push_str("$prefs | ConvertTo-Json -Depth 10 | Set-Content $prefsPath -Encoding UTF8\n");
+        
+        // Handle Local State file
+        content.push_str("if (Test-Path $localStatePath) {\n");
+        content.push_str("    $localState = Get-Content $localStatePath -Raw | ConvertFrom-Json\n");
+        content.push_str("} else {\n");
+        content.push_str("    $localState = @{}\n");
+        content.push_str("}\n");
+        content.push_str("if (-not $localState.browser) { $localState.browser = @{} }\n");
+        content.push_str("$localState.browser.enabled_labs_experiments = @(\n");
+        for (i, feature) in experimental_features.iter().enumerate() {
+            content.push_str(&format!("    '{}'", feature));
+            if i < experimental_features.len() - 1 {
+                content.push_str(",");
+            }
+            content.push_str("\n");
+        }
+        content.push_str(")\n");
+        content.push_str("$localState | ConvertTo-Json -Depth 10 | Set-Content $localStatePath -Encoding UTF8\n");
+        content.push_str("\"\n");
+        content.push_str("echo User preferences applied successfully!\n\n");
+        
         Ok(())
     }
 
-    fn generate_preferences_instructions(&self) -> Result<(), DebloaterError> {
-        let paths = self.get_preferences_path();
-        let prefs_path = &paths[0];
-        let local_state_path = &paths[1];
+    fn add_macos_preferences_section(&self, content: &mut String, version_suffix: &str) -> Result<(), DebloaterError> {
+        let prefs_config = self.preferences_config.as_ref();
+        
+        // Use config if provided, otherwise use defaults
+        let search_provider = prefs_config
+            .and_then(|p| p.search_engines.first())
+            .cloned()
+            .unwrap_or_else(|| SearchProvider {
+                keyword: "brave".to_string(),
+                name: "Brave Search".to_string(),
+                search_url: "https://search.brave.com/search?q={searchTerms}".to_string(),
+            });
 
-        let filename = match self.version {
-            BraveVersion::Normal => "brave_user_preferences.json",
-            BraveVersion::Nightly => "brave_nightly_user_preferences.json",
-        };
+        let dashboard_config = prefs_config
+            .map(|p| p.dashboard.clone())
+            .unwrap_or_else(|| NewTabPage {
+                show_clock: Some(true),
+                show_background_image: Some(false),
+                show_stats: Some(false),
+                show_shortcuts: Some(false),
+                show_branded_background_image: Some(false),
+                show_cards: Some(false),
+                show_search_widget: Some(false),
+                show_brave_news: Some(false),
+                show_together: Some(false),
+            });
 
-        let instructions = match self.platform {
-            Platform::Windows => {
-                format!(
-                    "# User Preferences Installation Instructions for Windows\n\
-                    # \n\
-                    # IMPORTANT: Close Brave browser completely before applying these changes!\n\
-                    # \n\
-                    # 1. Navigate to your Brave user data directory:\n\
-                    #    {}\n\
-                    # \n\
-                    # 2. If the Preferences file exists, back it up:\n\
-                    #    copy \"Preferences\" \"Preferences.backup\"\n\
-                    # \n\
-                    # 3. Extract the 'preferences' section from {} and overwrite/merge with your Preferences file\n\
-                    # \n\
-                    # 4. For Local State, navigate to:\n\
-                    #    {}\n\
-                    # \n\
-                    # 5. Extract the 'local_state' section and merge with your Local State file\n\
-                    # \n\
-                    # 6. Start Brave browser to see the changes\n\
-                    # \n\
-                    # Note: The JSON structure in {} shows the exact format needed.\n\
-                    # You can manually merge these settings or use a JSON editor.",
-                    prefs_path, filename, local_state_path, filename
-                )
+        let experimental_features = prefs_config
+            .map(|p| p.experimental_features.clone())
+            .unwrap_or_else(|| vec!["brave-adblock-experimental-list-default@1".to_string()]);
+
+        content.push_str("echo -e \"${GREEN}Modifying user preferences...${NC}\"\n");
+        content.push_str(&format!("BRAVE_DATA=\"$HOME/Library/Application Support/BraveSoftware/{}\"\n", version_suffix));
+        content.push_str("PREFS_FILE=\"$BRAVE_DATA/Default/Preferences\"\n");
+        content.push_str("LOCAL_STATE=\"$BRAVE_DATA/Local State\"\n\n");
+        
+        // Create directories if they don't exist
+        content.push_str("mkdir -p \"$BRAVE_DATA/Default\"\n\n");
+        
+        // Backup existing files
+        content.push_str("[ -f \"$PREFS_FILE\" ] && cp \"$PREFS_FILE\" \"$PREFS_FILE.backup\"\n");
+        content.push_str("[ -f \"$LOCAL_STATE\" ] && cp \"$LOCAL_STATE\" \"$LOCAL_STATE.backup\"\n\n");
+        
+        // Check if jq is available
+        content.push_str("if ! command -v jq &> /dev/null; then\n");
+        content.push_str("    echo -e \"${YELLOW}jq not found. Installing via Homebrew...${NC}\"\n");
+        content.push_str("    if command -v brew &> /dev/null; then\n");
+        content.push_str("        brew install jq\n");
+        content.push_str("    else\n");
+        content.push_str("        echo -e \"${RED}Error: jq is required but not installed and Homebrew is not available${NC}\"\n");
+        content.push_str("        echo \"Please install jq manually: https://stedolan.github.io/jq/download/\"\n");
+        content.push_str("        exit 1\n");
+        content.push_str("    fi\n");
+        content.push_str("fi\n\n");
+        
+        // Modify preferences file
+        content.push_str("# Create or modify Preferences file\n");
+        content.push_str("if [ -f \"$PREFS_FILE\" ]; then\n");
+        content.push_str("    PREFS_JSON=$(cat \"$PREFS_FILE\")\n");
+        content.push_str("else\n");
+        content.push_str("    PREFS_JSON='{}'\n");
+        content.push_str("fi\n\n");
+        
+        // Update preferences using jq
+        content.push_str("PREFS_JSON=$(echo \"$PREFS_JSON\" | jq '\n");
+        
+        // Search provider
+        content.push_str("  .default_search_provider_data = {\n");
+        content.push_str(&format!("    \"keyword\": \"{}\",\n", search_provider.keyword));
+        content.push_str(&format!("    \"name\": \"{}\",\n", search_provider.name));
+        content.push_str(&format!("    \"search_url\": \"{}\"\n", search_provider.search_url));
+        content.push_str("  } |\n");
+        
+        // Brave preferences
+        content.push_str("  .brave = (.brave // {}) |\n");
+        content.push_str("  .brave.new_tab_page = (.brave.new_tab_page // {}) |\n");
+        content.push_str("  .brave.stats = (.brave.stats // {}) |\n");
+        content.push_str("  .brave.today = (.brave.today // {}) |\n");
+        
+        // Dashboard settings
+        if let Some(show_clock) = dashboard_config.show_clock {
+            content.push_str(&format!("  .brave.new_tab_page.show_clock = {} |\n", show_clock.to_string().to_lowercase()));
+        }
+        if let Some(show_bg) = dashboard_config.show_background_image {
+            content.push_str(&format!("  .brave.new_tab_page.show_background_image = {} |\n", show_bg.to_string().to_lowercase()));
+        }
+        if let Some(show_stats) = dashboard_config.show_stats {
+            content.push_str(&format!("  .brave.new_tab_page.show_stats = {} |\n", show_stats.to_string().to_lowercase()));
+        }
+        if let Some(show_shortcuts) = dashboard_config.show_shortcuts {
+            content.push_str(&format!("  .brave.new_tab_page.show_shortcuts = {} |\n", show_shortcuts.to_string().to_lowercase()));
+        }
+        if let Some(show_branded) = dashboard_config.show_branded_background_image {
+            content.push_str(&format!("  .brave.new_tab_page.show_branded_background_image = {} |\n", show_branded.to_string().to_lowercase()));
+        }
+        if let Some(show_cards) = dashboard_config.show_cards {
+            content.push_str(&format!("  .brave.new_tab_page.show_cards = {} |\n", show_cards.to_string().to_lowercase()));
+        }
+        if let Some(show_search) = dashboard_config.show_search_widget {
+            content.push_str(&format!("  .brave.new_tab_page.show_search_widget = {} |\n", show_search.to_string().to_lowercase()));
+        }
+        if let Some(show_news) = dashboard_config.show_brave_news {
+            content.push_str(&format!("  .brave.new_tab_page.show_brave_news = {} |\n", show_news.to_string().to_lowercase()));
+        }
+        if let Some(show_together) = dashboard_config.show_together {
+            content.push_str(&format!("  .brave.new_tab_page.show_together = {} |\n", show_together.to_string().to_lowercase()));
+        }
+        
+        content.push_str("  .brave.stats.enabled = false |\n");
+        content.push_str("  .brave.today.should_show_brave_today_widget = false\n");
+        content.push_str("')\n\n");
+        
+        content.push_str("echo \"$PREFS_JSON\" > \"$PREFS_FILE\"\n\n");
+        
+        // Handle Local State file
+        content.push_str("# Create or modify Local State file\n");
+        content.push_str("if [ -f \"$LOCAL_STATE\" ]; then\n");
+        content.push_str("    LOCAL_JSON=$(cat \"$LOCAL_STATE\")\n");
+        content.push_str("else\n");
+        content.push_str("    LOCAL_JSON='{}'\n");
+        content.push_str("fi\n\n");
+        
+        content.push_str("LOCAL_JSON=$(echo \"$LOCAL_JSON\" | jq '\n");
+        content.push_str("  .browser = (.browser // {}) |\n");
+        content.push_str("  .browser.enabled_labs_experiments = [\n");
+        for (i, feature) in experimental_features.iter().enumerate() {
+            content.push_str(&format!("    \"{}\"", feature));
+            if i < experimental_features.len() - 1 {
+                content.push_str(",");
             }
-            Platform::MacOS => {
-                format!(
-                    "#!/bin/bash\n\
-                    # User Preferences Installation Instructions for macOS\n\
-                    # \n\
-                    # IMPORTANT: Close Brave browser completely before applying these changes!\n\
-                    # \n\
-                    echo \"Applying Brave user preferences...\"\n\
-                    \n\
-                    PREFS_PATH=\"{}\"\n\
-                    LOCAL_STATE_PATH=\"{}\"\n\
-                    \n\
-                    # Create directories if they don't exist\n\
-                    mkdir -p \"$(dirname \"$PREFS_PATH\")\"\n\
-                    mkdir -p \"$(dirname \"$LOCAL_STATE_PATH\")\"\n\
-                    \n\
-                    # Backup existing files\n\
-                    [ -f \"$PREFS_PATH\" ] && cp \"$PREFS_PATH\" \"$PREFS_PATH.backup\"\n\
-                    [ -f \"$LOCAL_STATE_PATH\" ] && cp \"$LOCAL_STATE_PATH\" \"$LOCAL_STATE_PATH.backup\"\n\
-                    \n\
-                    echo \"Please manually merge the 'preferences' and 'local_state' sections from {}\"\n\
-                    echo \"with your existing Preferences and Local State files.\"\n\
-                    echo \"Preferences file: $PREFS_PATH\"\n\
-                    echo \"Local State file: $LOCAL_STATE_PATH\"\n\
-                    \n\
-                    echo \"Configuration complete. Start Brave to see changes.\"",
-                    prefs_path, local_state_path, filename
-                )
+            content.push_str("\n");
+        }
+        content.push_str("  ]\n");
+        content.push_str("')\n\n");
+        
+        content.push_str("echo \"$LOCAL_JSON\" > \"$LOCAL_STATE\"\n");
+        content.push_str("echo -e \"${GREEN}User preferences applied successfully!${NC}\"\n");
+        content.push_str("echo\n\n");
+        
+        Ok(())
+    }
+
+    fn add_linux_preferences_section(&self, content: &mut String, version_suffix: &str) -> Result<(), DebloaterError> {
+        let prefs_config = self.preferences_config.as_ref();
+        
+        // Use config if provided, otherwise use defaults
+        let search_provider = prefs_config
+            .and_then(|p| p.search_engines.first())
+            .cloned()
+            .unwrap_or_else(|| SearchProvider {
+                keyword: "brave".to_string(),
+                name: "Brave Search".to_string(),
+                search_url: "https://search.brave.com/search?q={searchTerms}".to_string(),
+            });
+
+        let dashboard_config = prefs_config
+            .map(|p| p.dashboard.clone())
+            .unwrap_or_else(|| NewTabPage {
+                show_clock: Some(true),
+                show_background_image: Some(false),
+                show_stats: Some(false),
+                show_shortcuts: Some(false),
+                show_branded_background_image: Some(false),
+                show_cards: Some(false),
+                show_search_widget: Some(false),
+                show_brave_news: Some(false),
+                show_together: Some(false),
+            });
+
+        let experimental_features = prefs_config
+            .map(|p| p.experimental_features.clone())
+            .unwrap_or_else(|| vec!["brave-adblock-experimental-list-default@1".to_string()]);
+
+        content.push_str("echo -e \"${GREEN}Modifying user preferences...${NC}\"\n");
+        
+        // Check for Flatpak installation
+        content.push_str("if command -v flatpak &> /dev/null && flatpak list | grep -q com.brave.Browser; then\n");
+        content.push_str(&format!("    BRAVE_DATA=\"$HOME/.var/app/com.brave.Browser/config/BraveSoftware/{}\"\n", version_suffix));
+        content.push_str("    echo \"Detected Flatpak Brave installation\"\n");
+        content.push_str("else\n");
+        content.push_str(&format!("    BRAVE_DATA=\"$HOME/.config/BraveSoftware/{}\"\n", version_suffix));
+        content.push_str("    echo \"Detected native Brave installation\"\n");
+        content.push_str("fi\n\n");
+        
+        content.push_str("PREFS_FILE=\"$BRAVE_DATA/Default/Preferences\"\n");
+        content.push_str("LOCAL_STATE=\"$BRAVE_DATA/Local State\"\n\n");
+        
+        // Create directories if they don't exist
+        content.push_str("mkdir -p \"$BRAVE_DATA/Default\"\n\n");
+        
+        // Backup existing files
+        content.push_str("[ -f \"$PREFS_FILE\" ] && cp \"$PREFS_FILE\" \"$PREFS_FILE.backup\"\n");
+        content.push_str("[ -f \"$LOCAL_STATE\" ] && cp \"$LOCAL_STATE\" \"$LOCAL_STATE.backup\"\n\n");
+        
+        // Check if jq is available
+        content.push_str("if ! command -v jq &> /dev/null; then\n");
+        content.push_str("    echo -e \"${YELLOW}jq not found. Attempting to install...${NC}\"\n");
+        content.push_str("    if command -v apt-get &> /dev/null; then\n");
+        content.push_str("        sudo apt-get update && sudo apt-get install -y jq\n");
+        content.push_str("    elif command -v dnf &> /dev/null; then\n");
+        content.push_str("        sudo dnf install -y jq\n");
+        content.push_str("    elif command -v pacman &> /dev/null; then\n");
+        content.push_str("        sudo pacman -S jq\n");
+        content.push_str("    elif command -v zypper &> /dev/null; then\n");
+        content.push_str("        sudo zypper install jq\n");
+        content.push_str("    else\n");
+        content.push_str("        echo -e \"${RED}Error: jq is required but could not be installed automatically${NC}\"\n");
+        content.push_str("        echo \"Please install jq manually for your distribution\"\n");
+        content.push_str("        exit 1\n");
+        content.push_str("    fi\n");
+        content.push_str("    if ! command -v jq &> /dev/null; then\n");
+        content.push_str("        echo -e \"${RED}Error: jq installation failed${NC}\"\n");
+        content.push_str("        exit 1\n");
+        content.push_str("    fi\n");
+        content.push_str("fi\n\n");
+        
+        // Modify preferences file
+        content.push_str("# Create or modify Preferences file\n");
+        content.push_str("if [ -f \"$PREFS_FILE\" ]; then\n");
+        content.push_str("    PREFS_JSON=$(cat \"$PREFS_FILE\")\n");
+        content.push_str("else\n");
+        content.push_str("    PREFS_JSON='{}'\n");
+        content.push_str("fi\n\n");
+        
+        // Update preferences using jq
+        content.push_str("PREFS_JSON=$(echo \"$PREFS_JSON\" | jq '\n");
+        
+        // Search provider
+        content.push_str("  .default_search_provider_data = {\n");
+        content.push_str(&format!("    \"keyword\": \"{}\",\n", search_provider.keyword));
+        content.push_str(&format!("    \"name\": \"{}\",\n", search_provider.name));
+        content.push_str(&format!("    \"search_url\": \"{}\"\n", search_provider.search_url));
+        content.push_str("  } |\n");
+        
+        // Brave preferences
+        content.push_str("  .brave = (.brave // {}) |\n");
+        content.push_str("  .brave.new_tab_page = (.brave.new_tab_page // {}) |\n");
+        content.push_str("  .brave.stats = (.brave.stats // {}) |\n");
+        content.push_str("  .brave.today = (.brave.today // {}) |\n");
+        
+        // Dashboard settings
+        if let Some(show_clock) = dashboard_config.show_clock {
+            content.push_str(&format!("  .brave.new_tab_page.show_clock = {} |\n", show_clock.to_string().to_lowercase()));
+        }
+        if let Some(show_bg) = dashboard_config.show_background_image {
+            content.push_str(&format!("  .brave.new_tab_page.show_background_image = {} |\n", show_bg.to_string().to_lowercase()));
+        }
+        if let Some(show_stats) = dashboard_config.show_stats {
+            content.push_str(&format!("  .brave.new_tab_page.show_stats = {} |\n", show_stats.to_string().to_lowercase()));
+        }
+        if let Some(show_shortcuts) = dashboard_config.show_shortcuts {
+            content.push_str(&format!("  .brave.new_tab_page.show_shortcuts = {} |\n", show_shortcuts.to_string().to_lowercase()));
+        }
+        if let Some(show_branded) = dashboard_config.show_branded_background_image {
+            content.push_str(&format!("  .brave.new_tab_page.show_branded_background_image = {} |\n", show_branded.to_string().to_lowercase()));
+        }
+        if let Some(show_cards) = dashboard_config.show_cards {
+            content.push_str(&format!("  .brave.new_tab_page.show_cards = {} |\n", show_cards.to_string().to_lowercase()));
+        }
+        if let Some(show_search) = dashboard_config.show_search_widget {
+            content.push_str(&format!("  .brave.new_tab_page.show_search_widget = {} |\n", show_search.to_string().to_lowercase()));
+        }
+        if let Some(show_news) = dashboard_config.show_brave_news {
+            content.push_str(&format!("  .brave.new_tab_page.show_brave_news = {} |\n", show_news.to_string().to_lowercase()));
+        }
+        if let Some(show_together) = dashboard_config.show_together {
+            content.push_str(&format!("  .brave.new_tab_page.show_together = {} |\n", show_together.to_string().to_lowercase()));
+        }
+        
+        content.push_str("  .brave.stats.enabled = false |\n");
+        content.push_str("  .brave.today.should_show_brave_today_widget = false\n");
+        content.push_str("')\n\n");
+        
+        content.push_str("echo \"$PREFS_JSON\" > \"$PREFS_FILE\"\n\n");
+        
+        // Handle Local State file
+        content.push_str("# Create or modify Local State file\n");
+        content.push_str("if [ -f \"$LOCAL_STATE\" ]; then\n");
+        content.push_str("    LOCAL_JSON=$(cat \"$LOCAL_STATE\")\n");
+        content.push_str("else\n");
+        content.push_str("    LOCAL_JSON='{}'\n");
+        content.push_str("fi\n\n");
+        
+        content.push_str("LOCAL_JSON=$(echo \"$LOCAL_JSON\" | jq '\n");
+        content.push_str("  .browser = (.browser // {}) |\n");
+        content.push_str("  .browser.enabled_labs_experiments = [\n");
+        for (i, feature) in experimental_features.iter().enumerate() {
+            content.push_str(&format!("    \"{}\"", feature));
+            if i < experimental_features.len() - 1 {
+                content.push_str(",");
             }
-            Platform::Linux => {
-                format!(
-                    "#!/bin/bash\n\
-                    # User Preferences Installation Instructions for Linux\n\
-                    # \n\
-                    # IMPORTANT: Close Brave browser completely before applying these changes!\n\
-                    # \n\
-                    echo \"Applying Brave user preferences...\"\n\
-                    \n\
-                    PREFS_PATH=\"{}\"\n\
-                    LOCAL_STATE_PATH=\"{}\"\n\
-                    \n\
-                    # Create directories if they don't exist\n\
-                    mkdir -p \"$(dirname \"$PREFS_PATH\")\"\n\
-                    mkdir -p \"$(dirname \"$LOCAL_STATE_PATH\")\"\n\
-                    \n\
-                    # Backup existing files\n\
-                    [ -f \"$PREFS_PATH\" ] && cp \"$PREFS_PATH\" \"$PREFS_PATH.backup\"\n\
-                    [ -f \"$LOCAL_STATE_PATH\" ] && cp \"$LOCAL_STATE_PATH\" \"$LOCAL_STATE_PATH.backup\"\n\
-                    \n\
-                    echo \"Please manually merge the 'preferences' and 'local_state' sections from {}\"\n\
-                    echo \"with your existing Preferences and Local State files using jq or a JSON editor.\"\n\
-                    echo \"\"\n\
-                    echo \"Example using jq (if installed):\"\n\
-                    echo \"# For Preferences file:\"\n\
-                    echo \"jq -s '.[0] * .[1].preferences' \\\"$PREFS_PATH\\\" {} > temp_prefs.json && mv temp_prefs.json \\\"$PREFS_PATH\\\"\"\n\
-                    echo \"\"\n\
-                    echo \"# For Local State file:\"\n\
-                    echo \"jq -s '.[0] * .[1].local_state' \\\"$LOCAL_STATE_PATH\\\" {} > temp_local.json && mv temp_local.json \\\"$LOCAL_STATE_PATH\\\"\"\n\
-                    echo \"\"\n\
-                    echo \"Preferences file: $PREFS_PATH\"\n\
-                    echo \"Local State file: $LOCAL_STATE_PATH\"\n\
-                    echo \"\"\n\
-                    echo \"Configuration complete. Start Brave to see changes.\"",
-                    prefs_path, local_state_path, filename, filename, filename
-                )
-            }
-        };
-
-        let instructions_filename = match self.version {
-            BraveVersion::Normal => match self.platform {
-                Platform::Windows => "brave_user_preferences_install.bat",
-                _ => "brave_user_preferences_install.sh",
-            },
-            BraveVersion::Nightly => match self.platform {
-                Platform::Windows => "brave_nightly_user_preferences_install.bat",
-                _ => "brave_nightly_user_preferences_install.sh",
-            },
-        };
-
-        let instructions_path = Path::new(&self.output_dir).join(instructions_filename);
-        fs::write(instructions_path, instructions)?;
-
+            content.push_str("\n");
+        }
+        content.push_str("  ]\n");
+        content.push_str("')\n\n");
+        
+        content.push_str("echo \"$LOCAL_JSON\" > \"$LOCAL_STATE\"\n");
+        content.push_str("echo -e \"${GREEN}User preferences applied successfully!${NC}\"\n");
+        content.push_str("echo\n\n");
+        
         Ok(())
     }
 }
@@ -629,32 +964,26 @@ fn main() -> Result<(), DebloaterError> {
              extensions.len(),
              extension_names.join(", "));
 
-    // Load preferences config if preferences generation is requested
-    let preferences_config = if args.preferences {
-        println!("Loading preferences from: {}", args.preferences_config);
-        load_preferences_config(&args.preferences_config)?
-    } else {
-        None
-    };
+    // Always load preferences config for unified scripts
+    println!("Loading preferences from: {}", args.preferences_config);
+    let preferences_config = load_preferences_config(&args.preferences_config)?;
 
-    if args.preferences {
-        if preferences_config.is_some() {
-            println!("Loaded preferences configuration");
-        } else {
-            println!("Using default preferences configuration");
-        }
+    if preferences_config.is_some() {
+        println!("Loaded preferences configuration");
+    } else {
+        println!("Using default preferences configuration");
     }
     
-    println!("Generating {} configuration for Brave {:?}...", 
+    println!("Generating unified {} script for Brave {:?}...", 
              match args.platform {
-                 Platform::Windows => "Windows Registry",
-                 Platform::MacOS => "macOS Script",
-                 Platform::Linux => "Linux JSON",
+                 Platform::Windows => "Windows",
+                 Platform::MacOS => "macOS",
+                 Platform::Linux => "Linux",
              },
              args.version);
     
     let output_dir = args.output.clone();
-    let generator = DebloaterGenerator::new(config, extensions, args.platform, args.version, args.output, args.preferences, preferences_config);
+    let generator = DebloaterGenerator::new(config, extensions, args.platform, args.version, args.output, preferences_config);
     generator.generate()?;
     
     println!("Configuration files generated successfully in: {}", output_dir);

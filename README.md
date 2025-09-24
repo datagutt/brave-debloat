@@ -1,13 +1,16 @@
 # Brave Browser Debloater
 
-A cross-platform Rust tool that generates Brave browser debloat configurations for Windows, macOS, and Linux. Supports both normal and nightly versions of Brave browser.
+A cross-platform Rust tool that generates comprehensive Brave browser debloat scripts for Windows, macOS, and Linux. Each script handles both system policies and user preferences in a single executable file. Supports both normal and nightly versions of Brave browser.
 
 ## Features
 
-- **Cross-platform support**: Windows (Registry), macOS (defaults/plist), Linux (JSON policies)
+- **Unified Scripts**: Single executable files that handle both system policies and user preferences
+- **Cross-platform support**: Windows (Registry + PowerShell), macOS (plist + shell), Linux (JSON policies + shell)
 - **Brave version support**: Both normal and nightly versions
 - **Comprehensive debloating**: Disables telemetry, ads, rewards, VPN, wallet, and other privacy-invasive features
 - **Extension management**: Force-installs essential privacy extensions
+- **User preferences**: Customizes dashboard, search engine, and experimental features
+- **Smart detection**: Auto-detects Flatpak installations on Linux
 
 ## Usage
 
@@ -15,17 +18,14 @@ A cross-platform Rust tool that generates Brave browser debloat configurations f
 # Build the tool
 cargo build --release
 
-# Generate Windows registry file for normal Brave
+# Generate unified Windows script for normal Brave
 ./target/release/brave-debloater --platform windows --version normal
 
-# Generate macOS script for Brave Nightly
+# Generate unified macOS script for Brave Nightly
 ./target/release/brave-debloater --platform mac-os --version nightly
 
-# Generate Linux JSON for normal Brave
+# Generate unified Linux script for normal Brave
 ./target/release/brave-debloater --platform linux --version normal
-
-# Generate user preferences files for dashboard and search customization
-./target/release/brave-debloater --platform linux --preferences
 
 # Use custom config and extensions files with custom output directory
 ./target/release/brave-debloater --platform windows --config my-config.json --extensions my-extensions.json --output my-output
@@ -36,8 +36,8 @@ cargo build --release
 # Use minimal debloating
 ./target/release/brave-debloater --platform windows --config configs/minimal.json
 
-# Generate both policies and user preferences with custom preferences config
-./target/release/brave-debloater --platform linux --preferences --preferences-config my-preferences.json
+# Use custom preferences config for dashboard and search customization
+./target/release/brave-debloater --platform linux --preferences-config my-preferences.json
 
 # Default behavior uses privacy-focused config
 ./target/release/brave-debloater --platform linux
@@ -50,22 +50,23 @@ cargo build --release
 - `--config`: Configuration file path (default: `configs/privacy-focused.json`)
 - `--extensions`: Extensions configuration file path (default: `extensions.json`)
 - `--output`: Output directory (default: `output`)
-- `--preferences`: Generate user preferences files for dashboard and search customization
 - `--preferences-config`: Preferences configuration file (default: `preferences.json`)
 
 ## Installation Instructions
 
 ### Windows
-1. Run the generated `.reg` file as Administrator
-2. Or manually import using Registry Editor
+1. Right-click the generated `.bat` file and select "Run as Administrator"
+2. The script will automatically apply registry policies and modify user preferences
 
 ### macOS
 1. Make the script executable: `chmod +x output/brave_debloat_macos.sh`
-2. Run with sudo: `sudo ./output/brave_debloat_macos.sh`
+2. Run with sudo for complete configuration: `sudo ./output/brave_debloat_macos.sh`
+3. Or run without sudo to apply only user preferences
 
 ### Linux
-1. Follow instructions in the generated `_install.txt` file
-2. Copy the JSON file to the appropriate Brave policies directory
+1. Make the script executable: `chmod +x output/brave_debloat_linux.sh`
+2. Run with sudo for complete configuration: `sudo ./output/brave_debloat_linux.sh`
+3. Or run without sudo to apply only user preferences
 
 ## Configuration
 
@@ -108,29 +109,25 @@ See `configs/README.md` for detailed comparison of variants.
 
 ## Generated Files
 
-The tool generates the following files in the output directory:
-
-### Policy Files
+The tool generates unified scripts that handle both system policies and user preferences:
 
 **For Normal Brave:**
-- `brave_debloat.reg` (Windows Registry)
-- `brave_debloat_macos.sh` (macOS Script)
-- `brave_debloat_linux.json` + `brave_debloat_linux_install.txt` (Linux)
+- `brave_debloat.bat` (Windows - Registry + PowerShell)
+- `brave_debloat_macos.sh` (macOS - plist + shell + jq)
+- `brave_debloat_linux.sh` (Linux - JSON policies + shell + jq)
 
 **For Brave Nightly:**
-- `brave_nightly_debloat.reg` (Windows Registry)
-- `brave_nightly_debloat_macos.sh` (macOS Script)  
-- `brave_nightly_debloat_linux.json` + `brave_nightly_debloat_linux_install.txt` (Linux)
+- `brave_nightly_debloat.bat` (Windows)
+- `brave_nightly_debloat_macos.sh` (macOS)  
+- `brave_nightly_debloat_linux.sh` (Linux)
 
-### User Preferences Files (when using --preferences flag)
-
-**For Normal Brave:**
-- `brave_user_preferences.json` + `brave_user_preferences_install.sh/.bat` 
-
-**For Brave Nightly:**
-- `brave_nightly_user_preferences.json` + `brave_nightly_user_preferences_install.sh/.bat`
-
-User preferences files modify Brave's `Preferences` and `Local State` files directly to customize the dashboard, search engine, and enable experimental features. These work alongside the policy files for comprehensive debloating.
+Each script performs the following actions:
+1. **System Policies**: Applies organization-level policies (requires admin/sudo)
+2. **User Preferences**: Modifies user's Preferences and Local State files directly
+3. **Dashboard Customization**: Removes widgets, customizes new tab page
+4. **Search Engine**: Configures default search provider
+5. **Experimental Features**: Enables advanced ad-blocking and other features
+6. **Safety Features**: Backs up existing files, checks for running processes
 
 ## License
 
